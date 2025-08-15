@@ -7,12 +7,12 @@ from datetime import datetime, timedelta
 import pytz
 
 # --- CONFIGURABLE PARAMETERS ---
-STOCK_SYMBOL = "AAPL"
+STOCK_SYMBOL = "HUT.TO"      # Hut 8 on TSX
 BUDGET = 1000
-POSITION_SIZE = 200  # Max per trade
-INTERVAL = "15m"
-PERIOD = "1d"  # 1 day of intraday data
-TIMEZONE = "US/Eastern"
+POSITION_SIZE = 200
+INTERVAL = "15m"             # Intraday interval
+PERIOD = "1d"                # Last trading day
+TIMEZONE = "Canada/Eastern" # Local timezone for TSX
 
 # --- TELEGRAM SETUP (use GitHub secrets or .env for security) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
