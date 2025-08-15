@@ -1,36 +1,36 @@
-name: Intraday Backtest & Telegram Alert
+name: Intraday Backtest with Telegram Alerts
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # Every 15 minutes UTC
-  workflow_dispatch:        # Manual run option
+    - cron: "*/15 * * * *"  # Every 15 minutes (UTC)
+  workflow_dispatch:
 
 jobs:
   run-backtest:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install dependencies
-      run: |
-        pip install --upgrade pip
-        pip install yfinance pandas matplotlib requests pytz
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas matplotlib requests pytz
 
-    - name: Run intraday script
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: python intraday_backtest.py
+      - name: Run intraday backtest script
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python intraday_backtest.py
 
-    - name: Upload chart (optional)
-      uses: actions/upload-artifact@v3
-      with:
-        name: intraday_plot
-        path: intraday_plot.png
+      - name: Upload chart (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: intraday_plot
+          path: intraday_plot.png
