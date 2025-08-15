@@ -2,7 +2,7 @@ name: Intraday Backtest with Telegram Alerts
 
 on:
   schedule:
-    - cron: "*/15 * * * *"  # Every 15 minutes (UTC)
+    - cron: "*/15 13-20 * * 1-5"
   workflow_dispatch:
 
 jobs:
