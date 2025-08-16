@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
 import pytz
-import talib
+import ta  # Using ta library instead of talib
 
 # --- CONFIGURABLE PARAMETERS ---
 SYMBOLS = ["HUT.TO", "SHOP.TO", "DEFI.NE", "DML.TO"]  # Add more TSX stocks here
@@ -28,6 +28,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
+    """Send message via Telegram bot"""
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -45,35 +46,41 @@ def send_telegram_message(message):
         print("Missing Telegram credentials.")
 
 def calculate_indicators(df):
-    """Calculate all technical indicators"""
+    """Calculate all technical indicators using ta library"""
     # Moving Averages
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['MA20'] = ta.trend.sma_indicator(df['Close'], window=20)
+    df['MA50'] = ta.trend.sma_indicator(df['Close'], window=50)
     
     # RSI
-    df['RSI'] = talib.RSI(df['Close'], timeperiod=14)
+    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
     
     # MACD
-    df['MACD'], df['MACD_Signal'], _ = talib.MACD(
-        df['Close'], 
-        fastperiod=MACD_FAST, 
-        slowperiod=MACD_SLOW, 
-        signalperiod=MACD_SIGNAL
-    )
+    macd = ta.trend.MACD(df['Close'], window_slow=MACD_SLOW, window_fast=MACD_FAST, window_sign=MACD_SIGNAL)
+    df['MACD'] = macd.macd()
+    df['MACD_Signal'] = macd.macd_signal()
     
     # Bollinger Bands
-    df['UpperBand'], df['MiddleBand'], df['LowerBand'] = talib.BBANDS(
-        df['Close'],
-        timeperiod=BOLLINGER_WINDOW,
-        nbdevup=BOLLINGER_STD,
-        nbdevdn=BOLLINGER_STD
-    )
+    bb = ta.volatility.BollingerBands(df['Close'], window=BOLLINGER_WINDOW, window_dev=BOLLINGER_STD)
+    df['UpperBand'] = bb.bollinger_hband()
+    df['LowerBand'] = bb.bollinger_lband()
+    df['MiddleBand'] = bb.bollinger_mavg()
     
     # Volume Weighted Average Price
-    df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
+    df['VWAP'] = ta.volume.volume_weighted_average_price(
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        volume=df['Volume'],
+        window=20
+    )
     
     # ATR for volatility
-    df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
+    df['ATR'] = ta.volatility.average_true_range(
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        window=14
+    )
     
     return df.dropna()
 
