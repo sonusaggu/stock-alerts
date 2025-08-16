@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
 import pytz
+import talib
 
 # --- CONFIGURABLE PARAMETERS ---
 SYMBOLS = ["HUT.TO", "SHOP.TO", "DEFI.NE", "DML.TO"]  # Add more TSX stocks here
@@ -12,6 +13,15 @@ POSITION_SIZE = 200
 INTERVAL = "15m"
 PERIOD = "1d"
 TIMEZONE = "Canada/Eastern"
+
+# Strategy parameters
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+BOLLINGER_WINDOW = 20
+BOLLINGER_STD = 2
 
 # --- TELEGRAM SETUP ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -34,6 +44,81 @@ def send_telegram_message(message):
     else:
         print("Missing Telegram credentials.")
 
+def calculate_indicators(df):
+    """Calculate all technical indicators"""
+    # Moving Averages
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    
+    # RSI
+    df['RSI'] = talib.RSI(df['Close'], timeperiod=14)
+    
+    # MACD
+    df['MACD'], df['MACD_Signal'], _ = talib.MACD(
+        df['Close'], 
+        fastperiod=MACD_FAST, 
+        slowperiod=MACD_SLOW, 
+        signalperiod=MACD_SIGNAL
+    )
+    
+    # Bollinger Bands
+    df['UpperBand'], df['MiddleBand'], df['LowerBand'] = talib.BBANDS(
+        df['Close'],
+        timeperiod=BOLLINGER_WINDOW,
+        nbdevup=BOLLINGER_STD,
+        nbdevdn=BOLLINGER_STD
+    )
+    
+    # Volume Weighted Average Price
+    df['VWAP'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close']) / 3).cumsum() / df['Volume'].cumsum()
+    
+    # ATR for volatility
+    df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
+    
+    return df.dropna()
+
+def generate_signal(row, position):
+    """Generate trading signals based on multiple indicators"""
+    buy_signals = 0
+    sell_signals = 0
+    
+    # MA Crossover
+    if row['Close'] > row['MA20'] and row['MA20'] > row['MA50']:
+        buy_signals += 1
+    elif row['Close'] < row['MA20'] and row['MA20'] < row['MA50']:
+        sell_signals += 1
+    
+    # RSI
+    if row['RSI'] < RSI_OVERSOLD:
+        buy_signals += 1
+    elif row['RSI'] > RSI_OVERBOUGHT:
+        sell_signals += 1
+    
+    # MACD
+    if row['MACD'] > row['MACD_Signal']:
+        buy_signals += 1
+    elif row['MACD'] < row['MACD_Signal']:
+        sell_signals += 1
+    
+    # Bollinger Bands
+    if row['Close'] < row['LowerBand']:
+        buy_signals += 1
+    elif row['Close'] > row['UpperBand']:
+        sell_signals += 1
+    
+    # VWAP
+    if row['Close'] > row['VWAP']:
+        buy_signals += 0.5  # Less weight
+    else:
+        sell_signals += 0.5
+    
+    # Determine final signal (weighted)
+    if buy_signals >= 3 and not position:
+        return "BUY"
+    elif sell_signals >= 3 and position:
+        return "SELL"
+    return None
+
 # --- BACKTEST EACH STOCK ---
 for symbol in SYMBOLS:
     print(f"\n📊 Processing {symbol}")
@@ -51,8 +136,7 @@ for symbol in SYMBOLS:
             continue
 
         data.index = data.index.tz_localize('UTC').tz_convert(TIMEZONE)
-        data["MA20"] = data["Close"].rolling(window=20).mean()
-        data.dropna(inplace=True)
+        data = calculate_indicators(data)
 
         if data.empty:
             send_telegram_message(f"⚠️ Insufficient data for {symbol}")
@@ -61,64 +145,140 @@ for symbol in SYMBOLS:
         latest = data.iloc[-1]
         timestamp = data.index[-1]
         price = float(latest["Close"])
-        ma = float(latest["MA20"])
 
         trade_log = []
         position = None
-        cash = 1000  # Not used in final logic, but kept for tracking
+        cash = 1000  # Starting capital
         total_profit = 0
 
-        # --- BUY ---
-        if price > ma and not position:
-            qty = int(POSITION_SIZE // price)
-            if qty > 0:
-                position = {"buy_price": price, "qty": qty}
-                trade_log.append(("BUY", timestamp, price, qty))
-                send_telegram_message(
-                    f"📈 *BUY* {symbol}\n🕒 {timestamp.strftime('%Y-%m-%d %H:%M')}\n💵 Price: ${price:.2f}\n📦 Qty: {qty}"
-                )
-
-        # --- SELL ---
-        if position and price < ma:
-            qty = position["qty"]
-            buy_price = position["buy_price"]
-            profit = (price - buy_price) * qty
-            trade_log.append(("SELL", timestamp, price, qty, profit))
-            total_profit += profit
-            send_telegram_message(
-                f"📉 *SELL* {symbol}\n🕒 {timestamp.strftime('%Y-%m-%d %H:%M')}\n💵 Price: ${price:.2f}\n📦 Qty: {qty}\n💰 Profit: ${profit:.2f}"
-            )
-            position = None
+        # Iterate through each candle
+        for i in range(1, len(data)):
+            current = data.iloc[i]
+            prev = data.iloc[i-1]
+            
+            signal = generate_signal(current, position)
+            
+            # Execute trades
+            if signal == "BUY" and not position:
+                qty = int(POSITION_SIZE // current["Close"])
+                if qty > 0:
+                    position = {
+                        "buy_price": current["Close"],
+                        "qty": qty,
+                        "stop_loss": current["Close"] - (2 * current["ATR"]),
+                        "take_profit": current["Close"] + (3 * current["ATR"])
+                    }
+                    trade_log.append(("BUY", current.name, current["Close"], qty))
+                    send_telegram_message(
+                        f"📈 *BUY* {symbol}\n"
+                        f"🕒 {current.name.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"💵 Price: ${current['Close']:.2f}\n"
+                        f"📦 Qty: {qty}\n"
+                        f"🛑 Stop Loss: ${position['stop_loss']:.2f}\n"
+                        f"🎯 Take Profit: ${position['take_profit']:.2f}"
+                    )
+            
+            elif position:
+                # Check stop loss/take profit
+                if current["Low"] <= position["stop_loss"]:
+                    # Stop loss hit
+                    profit = (position["stop_loss"] - position["buy_price"]) * position["qty"]
+                    trade_log.append(("SELL", current.name, position["stop_loss"], position["qty"], profit))
+                    total_profit += profit
+                    send_telegram_message(
+                        f"🛑 *STOP LOSS* {symbol}\n"
+                        f"🕒 {current.name.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"💵 Price: ${position['stop_loss']:.2f}\n"
+                        f"📦 Qty: {position['qty']}\n"
+                        f"💰 Profit: ${profit:.2f}"
+                    )
+                    position = None
+                
+                elif current["High"] >= position["take_profit"]:
+                    # Take profit hit
+                    profit = (position["take_profit"] - position["buy_price"]) * position["qty"]
+                    trade_log.append(("SELL", current.name, position["take_profit"], position["qty"], profit))
+                    total_profit += profit
+                    send_telegram_message(
+                        f"🎯 *TAKE PROFIT* {symbol}\n"
+                        f"🕒 {current.name.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"💵 Price: ${position['take_profit']:.2f}\n"
+                        f"📦 Qty: {position['qty']}\n"
+                        f"💰 Profit: ${profit:.2f}"
+                    )
+                    position = None
+                
+                elif signal == "SELL":
+                    # Indicator-based sell
+                    profit = (current["Close"] - position["buy_price"]) * position["qty"]
+                    trade_log.append(("SELL", current.name, current["Close"], position["qty"], profit))
+                    total_profit += profit
+                    send_telegram_message(
+                        f"📉 *SELL* {symbol}\n"
+                        f"🕒 {current.name.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"💵 Price: ${current['Close']:.2f}\n"
+                        f"📦 Qty: {position['qty']}\n"
+                        f"💰 Profit: ${profit:.2f}"
+                    )
+                    position = None
 
         # --- SUMMARY ---
         open_position_value = position["qty"] * price if position else 0
-        final_value = cash + open_position_value
+        final_value = cash + total_profit + open_position_value
         roi = (final_value - 1000) / 1000 * 100
 
         summary_msg = (
             f"*{symbol} Intraday Summary*\n"
             f"🕒 {timestamp.strftime('%Y-%m-%d %H:%M')}\n"
-            f"📊 Price: ${price:.2f} | MA20: ${ma:.2f}\n"
+            f"📊 Price: ${price:.2f}\n"
             f"📦 Open Position: ${open_position_value:.2f}\n"
+            f"💰 Total Profit: ${total_profit:.2f}\n"
             f"📈 ROI: {roi:.2f}%\n"
             f"🔁 Trades: {len(trade_log)}"
         )
         send_telegram_message(summary_msg)
 
-        # Optional plot
-        plt.figure(figsize=(12, 5))
+        # Enhanced plot
+        plt.figure(figsize=(15, 10))
+        
+        # Price and indicators
+        plt.subplot(3, 1, 1)
         plt.plot(data["Close"], label="Price", color="black")
         plt.plot(data["MA20"], label="MA20", color="blue", linestyle="--")
+        plt.plot(data["MA50"], label="MA50", color="orange", linestyle="--")
+        plt.plot(data["UpperBand"], label="Upper Band", color="red", alpha=0.3)
+        plt.plot(data["LowerBand"], label="Lower Band", color="green", alpha=0.3)
+        plt.fill_between(data.index, data["UpperBand"], data["LowerBand"], color="grey", alpha=0.1)
+        
+        # Mark trades
         for t in trade_log:
             if t[0] == "BUY":
                 plt.scatter(t[1], t[2], marker="^", color="green", label="Buy", s=100)
             elif t[0] == "SELL":
                 plt.scatter(t[1], t[2], marker="v", color="red", label="Sell", s=100)
-        plt.title(f"{symbol} Intraday Backtest")
+        
+        plt.title(f"{symbol} Price and Indicators")
         plt.legend()
         plt.grid()
+        
+        # RSI
+        plt.subplot(3, 1, 2)
+        plt.plot(data["RSI"], label="RSI", color="purple")
+        plt.axhline(RSI_OVERBOUGHT, color="red", linestyle="--")
+        plt.axhline(RSI_OVERSOLD, color="green", linestyle="--")
+        plt.title("RSI")
+        plt.grid()
+        
+        # MACD
+        plt.subplot(3, 1, 3)
+        plt.plot(data["MACD"], label="MACD", color="blue")
+        plt.plot(data["MACD_Signal"], label="Signal", color="orange")
+        plt.title("MACD")
+        plt.grid()
+        
         plt.tight_layout()
         plt.savefig(f"{symbol.replace('.', '-')}_plot.png")
+        plt.close()
 
     except Exception as e:
         print(f"❌ Error processing {symbol}: {e}")
