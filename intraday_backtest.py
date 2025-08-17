@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import requests
 from datetime import datetime
 import pytz
-import ta  # Using ta library instead of talib
+import numpy as np
 
 # --- CONFIGURABLE PARAMETERS ---
-SYMBOLS = ["HUT.TO", "SHOP.TO", "DEFI.NE", "DML.TO"]  # Add more TSX stocks here
+SYMBOLS = ["HUT.TO", "SHOP.TO", "DEFI.NE", "DML.TO"]
 POSITION_SIZE = 200
 INTERVAL = "15m"
 PERIOD = "1d"
@@ -28,7 +28,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_message(message):
-    """Send message via Telegram bot"""
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -45,42 +44,55 @@ def send_telegram_message(message):
     else:
         print("Missing Telegram credentials.")
 
+def calculate_rsi(data, window=14):
+    """Calculate RSI without external libraries"""
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    """Calculate MACD without external libraries"""
+    exp1 = data['Close'].ewm(span=fast, adjust=False).mean()
+    exp2 = data['Close'].ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
+def calculate_bollinger_bands(data, window=20, std=2):
+    """Calculate Bollinger Bands without external libraries"""
+    sma = data['Close'].rolling(window=window).mean()
+    rolling_std = data['Close'].rolling(window=window).std()
+    upper = sma + (rolling_std * std)
+    lower = sma - (rolling_std * std)
+    return upper, sma, lower
+
+def calculate_atr(data, window=14):
+    """Calculate ATR without external libraries"""
+    high_low = data['High'] - data['Low']
+    high_close = np.abs(data['High'] - data['Close'].shift())
+    low_close = np.abs(data['Low'] - data['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(window=window).mean()
+
 def calculate_indicators(df):
-    """Calculate all technical indicators using ta library"""
+    """Calculate all technical indicators without external libraries"""
     # Moving Averages
-    df['MA20'] = ta.trend.sma_indicator(df['Close'], window=20)
-    df['MA50'] = ta.trend.sma_indicator(df['Close'], window=50)
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
     
     # RSI
-    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    df['RSI'] = calculate_rsi(df)
     
     # MACD
-    macd = ta.trend.MACD(df['Close'], window_slow=MACD_SLOW, window_fast=MACD_FAST, window_sign=MACD_SIGNAL)
-    df['MACD'] = macd.macd()
-    df['MACD_Signal'] = macd.macd_signal()
+    df['MACD'], df['MACD_Signal'] = calculate_macd(df, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
     
     # Bollinger Bands
-    bb = ta.volatility.BollingerBands(df['Close'], window=BOLLINGER_WINDOW, window_dev=BOLLINGER_STD)
-    df['UpperBand'] = bb.bollinger_hband()
-    df['LowerBand'] = bb.bollinger_lband()
-    df['MiddleBand'] = bb.bollinger_mavg()
-    
-    # Volume Weighted Average Price
-    df['VWAP'] = ta.volume.volume_weighted_average_price(
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        volume=df['Volume'],
-        window=20
-    )
+    df['UpperBand'], df['MiddleBand'], df['LowerBand'] = calculate_bollinger_bands(df, BOLLINGER_WINDOW, BOLLINGER_STD)
     
     # ATR for volatility
-    df['ATR'] = ta.volatility.average_true_range(
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        window=14
-    )
+    df['ATR'] = calculate_atr(df)
     
     return df.dropna()
 
@@ -112,12 +124,6 @@ def generate_signal(row, position):
         buy_signals += 1
     elif row['Close'] > row['UpperBand']:
         sell_signals += 1
-    
-    # VWAP
-    if row['Close'] > row['VWAP']:
-        buy_signals += 0.5  # Less weight
-    else:
-        sell_signals += 0.5
     
     # Determine final signal (weighted)
     if buy_signals >= 3 and not position:
@@ -161,7 +167,6 @@ for symbol in SYMBOLS:
         # Iterate through each candle
         for i in range(1, len(data)):
             current = data.iloc[i]
-            prev = data.iloc[i-1]
             
             signal = generate_signal(current, position)
             
@@ -245,7 +250,7 @@ for symbol in SYMBOLS:
         )
         send_telegram_message(summary_msg)
 
-        # Enhanced plot
+        # Plotting
         plt.figure(figsize=(15, 10))
         
         # Price and indicators
@@ -260,9 +265,9 @@ for symbol in SYMBOLS:
         # Mark trades
         for t in trade_log:
             if t[0] == "BUY":
-                plt.scatter(t[1], t[2], marker="^", color="green", label="Buy", s=100)
+                plt.scatter(t[1], t[2], marker="^", color="green", s=100)
             elif t[0] == "SELL":
-                plt.scatter(t[1], t[2], marker="v", color="red", label="Sell", s=100)
+                plt.scatter(t[1], t[2], marker="v", color="red", s=100)
         
         plt.title(f"{symbol} Price and Indicators")
         plt.legend()
